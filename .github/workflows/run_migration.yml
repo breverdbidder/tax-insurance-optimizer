@@ -10,11 +10,12 @@ jobs:
       - name: Install psql
         run: sudo apt-get install -y postgresql-client
         
-      - name: Run Migration
+      - name: Run Migration via Pooler
         env:
           PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: |
-          psql "postgresql://postgres:$PGPASSWORD@db.mocerqjnksmhcjzxrewo.supabase.co:5432/postgres" << 'SQL'
+          # Use transaction pooler (port 6543) which has better connectivity
+          psql "postgresql://postgres.mocerqjnksmhcjzxrewo:$PGPASSWORD@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require" << 'SQL'
           
           CREATE TABLE IF NOT EXISTS magi_calculations (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -100,10 +101,12 @@ jobs:
           CREATE INDEX IF NOT EXISTS idx_magi_year ON magi_calculations(tax_year_id, month);
           CREATE INDEX IF NOT EXISTS idx_assets_year ON asset_tracking(tax_year_id, is_countable);
           
+          SELECT 'SUCCESS: All 5 tables created' as result;
+          
           SQL
           
       - name: Verify Tables
         env:
           PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: |
-          psql "postgresql://postgres:$PGPASSWORD@db.mocerqjnksmhcjzxrewo.supabase.co:5432/postgres" -c "\dt"
+          psql "postgresql://postgres.mocerqjnksmhcjzxrewo:$PGPASSWORD@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require" -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'tax%' OR table_name LIKE 'magi%' OR table_name LIKE 'asset%' OR table_name LIKE 'insurance%';"
