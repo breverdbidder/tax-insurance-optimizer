@@ -1,0 +1,95 @@
+name: Tax Insurance Optimizer Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to run'
+        required: true
+        default: 'calculate_magi'
+        type: choice
+        options:
+          - calculate_magi
+          - check_assets
+          - get_recommendations
+          - full_analysis
+  schedule:
+    # Run weekly on Monday at 9 AM EST
+    - cron: '0 14 * * 1'
+
+env:
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+
+jobs:
+  tax-analysis:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install supabase python-dotenv
+      
+      - name: Run Tax Optimizer
+        run: |
+          cd src/agents
+          python -c "
+from tax_optimizer_agent import TaxInsuranceOptimizer
+
+agent = TaxInsuranceOptimizer()
+
+# Get current tax year
+import datetime
+year = datetime.datetime.now().year
+
+# Get or create tax year for Ariel Shapira
+tax_year = agent.get_or_create_tax_year(
+    year=year,
+    filer_name='Ariel Shapira',
+    filing_status='married',
+    target_program='medicaid'
+)
+
+print(f'Tax Year ID: {tax_year[\"id\"]}')
+
+# Calculate MAGI
+magi = agent.calculate_magi(tax_year['id'], year)
+print(f'\\n📊 MAGI Analysis for {year}:')
+print(f'   Gross Income: \${magi.gross_rental_income:,.2f}')
+print(f'   Total Expenses: \${magi.total_expenses:,.2f}')
+print(f'   Net Rental Income: \${magi.net_rental_income:,.2f}')
+print(f'   MAGI: \${magi.magi:,.2f}')
+print(f'   Target: {magi.target_program}')
+print(f'   Threshold: \${magi.threshold:,.2f}')
+print(f'   Headroom: \${magi.headroom:,.2f}')
+print(f'   On Track: {\"✅ YES\" if magi.on_track else \"❌ NO\"}')
+
+# Check assets
+assets = agent.check_asset_eligibility(tax_year['id'])
+print(f'\\n💰 Asset Analysis:')
+print(f'   Countable Assets: \${assets.total_countable:,.2f}')
+print(f'   Asset Limit: \${assets.asset_limit:,.2f}')
+print(f'   Under Limit: {\"✅ YES\" if assets.under_limit else \"❌ NO\"}')
+
+# Get recommendations
+print(f'\\n📋 Recommendations:')
+recs = agent.get_optimization_recommendations(tax_year['id'])
+for rec in recs:
+    print(f'   [{rec[\"priority\"]}] {rec[\"description\"]}')
+"
+
+      - name: Create Summary
+        run: |
+          echo "## Tax Insurance Optimizer Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Run Date:** $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Analysis completed. Check logs for details." >> $GITHUB_STEP_SUMMARY
