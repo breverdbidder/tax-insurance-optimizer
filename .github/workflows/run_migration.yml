@@ -1,0 +1,109 @@
+name: Run Tax Schema Migration
+
+on:
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client
+        
+      - name: Run Migration
+        env:
+          PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          psql "postgresql://postgres:$PGPASSWORD@db.mocerqjnksmhcjzxrewo.supabase.co:5432/postgres" << 'SQL'
+          
+          CREATE TABLE IF NOT EXISTS magi_calculations (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              tax_year_id UUID REFERENCES tax_years(id),
+              calculation_date DATE DEFAULT CURRENT_DATE,
+              month INTEGER,
+              rental_gross_income DECIMAL(12,2) DEFAULT 0,
+              rental_expenses_total DECIMAL(12,2) DEFAULT 0,
+              rental_net_income DECIMAL(12,2) DEFAULT 0,
+              other_income DECIMAL(12,2) DEFAULT 0,
+              self_employment_tax_deduction DECIMAL(10,2) DEFAULT 0,
+              health_insurance_deduction DECIMAL(10,2) DEFAULT 0,
+              other_adjustments DECIMAL(10,2) DEFAULT 0,
+              agi DECIMAL(12,2) DEFAULT 0,
+              magi DECIMAL(12,2) DEFAULT 0,
+              target_program VARCHAR(50),
+              program_threshold DECIMAL(12,2),
+              on_track BOOLEAN DEFAULT TRUE,
+              headroom DECIMAL(12,2),
+              notes TEXT,
+              created_at TIMESTAMPTZ DEFAULT NOW()
+          );
+          
+          CREATE TABLE IF NOT EXISTS asset_tracking (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              tax_year_id UUID REFERENCES tax_years(id),
+              asset_date DATE DEFAULT CURRENT_DATE,
+              asset_type VARCHAR(100) NOT NULL,
+              institution VARCHAR(255),
+              account_name VARCHAR(255),
+              description TEXT,
+              current_value DECIMAL(12,2) NOT NULL,
+              is_countable BOOLEAN DEFAULT TRUE,
+              exempt_reason TEXT,
+              created_at TIMESTAMPTZ DEFAULT NOW()
+          );
+          
+          CREATE TABLE IF NOT EXISTS insurance_applications (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              program VARCHAR(50) NOT NULL,
+              application_type VARCHAR(50),
+              application_date DATE,
+              confirmation_number VARCHAR(100),
+              status VARCHAR(50) DEFAULT 'pending',
+              decision_date DATE,
+              coverage_start_date DATE,
+              coverage_end_date DATE,
+              monthly_premium DECIMAL(8,2),
+              documents_submitted JSONB DEFAULT '[]',
+              notes TEXT,
+              created_at TIMESTAMPTZ DEFAULT NOW()
+          );
+          
+          CREATE TABLE IF NOT EXISTS tax_optimization_actions (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              tax_year_id UUID REFERENCES tax_years(id),
+              action_type VARCHAR(100) NOT NULL,
+              priority INTEGER DEFAULT 5 CHECK (priority BETWEEN 1 AND 10),
+              description TEXT NOT NULL,
+              potential_savings DECIMAL(10,2),
+              impact_on_magi DECIMAL(10,2),
+              deadline DATE,
+              completed BOOLEAN DEFAULT FALSE,
+              completed_date DATE,
+              result TEXT,
+              created_at TIMESTAMPTZ DEFAULT NOW()
+          );
+          
+          CREATE TABLE IF NOT EXISTS tax_agent_decisions (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              decision_date TIMESTAMPTZ DEFAULT NOW(),
+              decision_type VARCHAR(100) NOT NULL,
+              input_data JSONB,
+              analysis TEXT,
+              recommendation TEXT,
+              confidence_score DECIMAL(3,2),
+              action_taken TEXT,
+              outcome TEXT,
+              model_used VARCHAR(50) DEFAULT 'claude-sonnet-4',
+              created_at TIMESTAMPTZ DEFAULT NOW()
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_magi_year ON magi_calculations(tax_year_id, month);
+          CREATE INDEX IF NOT EXISTS idx_assets_year ON asset_tracking(tax_year_id, is_countable);
+          
+          SQL
+          
+      - name: Verify Tables
+        env:
+          PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          psql "postgresql://postgres:$PGPASSWORD@db.mocerqjnksmhcjzxrewo.supabase.co:5432/postgres" -c "\dt"
