@@ -1,10 +1,13 @@
 """
 Tax Insurance Optimizer Agent
-Created by: Ariel Shapira, Solo Founder - Everest Capital of Brevard LLC
+Life OS Module: Personal Finance
+Created by: Ariel Shapira
 Version: 1.0.0 | Date: 2025-12-07
 
-Agentic AI for optimizing rental property taxes to qualify for 
-Medicaid or ACA insurance programs.
+Personal AI agent for optimizing rental property taxes to qualify for 
+Medicaid ($0-200/yr) or ACA Silver CSR ($300-800/yr) insurance programs.
+
+Part of Shapira Life OS - https://breverdbidder.github.io/life-os
 """
 
 import os
