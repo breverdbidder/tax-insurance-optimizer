@@ -2,10 +2,15 @@
 Tax Insurance Optimizer Agent
 Life OS Module: Personal Finance
 Created by: Ariel Shapira
-Version: 1.0.0 | Date: 2025-12-07
+Version: 1.1.0 | Date: 2025-12-07
 
 Personal AI agent for optimizing rental property taxes to qualify for 
-Medicaid ($0-200/yr) or ACA Silver CSR ($300-800/yr) insurance programs.
+ACA Silver CSR insurance in FLORIDA (non-expansion state).
+
+CRITICAL: Florida has NOT expanded Medicaid!
+- Minimum income for ACA subsidies: $15,650 (100% FPL)
+- Below $15,650 = COVERAGE GAP (no subsidies, no Medicaid)
+- Target MAGI: $15,650 - $20,121 for BEST benefits (Silver CSR 94%)
 
 Part of Shapira Life OS - https://breverdbidder.github.io/life-os
 """
@@ -22,19 +27,92 @@ from supabase import create_client, Client
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mocerqjnksmhcjzxrewo.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
-# Insurance thresholds for 2025 Florida
+# 2026 Federal Poverty Level (for 2026 coverage)
+FPL_2026 = {
+    "single": 15650,
+    "two_person": 21150,
+    "three_person": 26650,
+    "four_person": 32150
+}
+
+# Insurance thresholds for 2026 Florida (NON-EXPANSION STATE)
+# Florida did NOT expand Medicaid - minimum for ACA is 100% FPL
+THRESHOLDS_2026 = {
+    # BEST OPTION: ACA Silver CSR 94% (100-150% FPL)
+    # $0 deductible, lowest copays, ~$1,350 out-of-pocket max
+    "aca_silver_csr_94": {
+        "single_min": 15650,   # 100% FPL - MINIMUM for any subsidy
+        "single_max": 23475,   # 150% FPL
+        "married_min": 21150,
+        "married_max": 31725,
+        "asset_limit": None,   # No asset test for ACA
+        "fpl_percentage_min": 100,
+        "fpl_percentage_max": 150,
+        "actuarial_value": 94,
+        "monthly_premium": "0-50",
+        "deductible": 0
+    },
+    # GOOD: ACA Silver CSR 87% (150-200% FPL)
+    "aca_silver_csr_87": {
+        "single_min": 23476,
+        "single_max": 31300,   # 200% FPL
+        "married_min": 31726,
+        "married_max": 42300,
+        "asset_limit": None,
+        "fpl_percentage_min": 150,
+        "fpl_percentage_max": 200,
+        "actuarial_value": 87,
+        "monthly_premium": "50-150",
+        "deductible": "250-500"
+    },
+    # OK: ACA Silver CSR 73% (200-250% FPL)
+    "aca_silver_csr_73": {
+        "single_min": 31301,
+        "single_max": 39125,   # 250% FPL
+        "married_min": 42301,
+        "married_max": 52875,
+        "asset_limit": None,
+        "fpl_percentage_min": 200,
+        "fpl_percentage_max": 250,
+        "actuarial_value": 73,
+        "monthly_premium": "100-250",
+        "deductible": "500-1500"
+    },
+    # SUBSIDY ONLY (no CSR): 250-400% FPL
+    "aca_subsidy_only": {
+        "single_min": 39126,
+        "single_max": 62600,   # 400% FPL - subsidy cliff
+        "married_min": 52876,
+        "married_max": 84600,
+        "asset_limit": None,
+        "fpl_percentage_min": 250,
+        "fpl_percentage_max": 400,
+        "actuarial_value": 70,  # Standard Silver
+        "monthly_premium": "200-500",
+        "deductible": "2000-5000"
+    },
+    # COVERAGE GAP - below 100% FPL in Florida
+    "coverage_gap": {
+        "single_max": 15649,
+        "married_max": 21149,
+        "warning": "NO SUBSIDIES - Florida coverage gap! Must increase income to $15,650+"
+    }
+}
+
+# Legacy thresholds for backward compatibility
 THRESHOLDS_2025 = {
     "medicaid": {
         "single": 20121,
         "married": 27214,
         "asset_limit_single": 2000,
         "asset_limit_married": 3000,
-        "fpl_percentage": 138
+        "fpl_percentage": 138,
+        "warning": "Florida has NOT expanded Medicaid - most adults don't qualify!"
     },
     "aca_silver_csr": {
         "single": 36450,
         "married": 49350,
-        "asset_limit": None,  # No asset test
+        "asset_limit": None,
         "fpl_percentage": 250
     },
     "aca_bronze": {
@@ -42,6 +120,23 @@ THRESHOLDS_2025 = {
         "married": 79120,
         "asset_limit": None,
         "fpl_percentage": 400
+    }
+}
+
+# OPTIMAL TARGET for Ariel Shapira in Florida
+OPTIMAL_MAGI_TARGET = {
+    "minimum": 15650,  # 100% FPL - absolute minimum for ACA
+    "optimal_low": 15650,
+    "optimal_high": 20121,  # Below old Medicaid threshold for safety
+    "description": "ACA Silver CSR 94% - best coverage at lowest cost",
+    "benefits": {
+        "monthly_premium": "$0-50",
+        "deductible": "$0",
+        "doctor_visit": "$5-10",
+        "specialist": "$10-20",
+        "out_of_pocket_max": "$1,350",
+        "mayo_clinic": "In-Network (BlueOptions PPO)",
+        "uf_health": "In-Network (BlueOptions PPO)"
     }
 }
 
@@ -371,56 +466,136 @@ class TaxInsuranceOptimizer:
         }
     
     def get_optimization_recommendations(self, tax_year_id: str) -> List[Dict]:
-        """Generate tax optimization recommendations"""
+        """
+        Generate tax optimization recommendations for FLORIDA (non-expansion state)
+        
+        CRITICAL: Florida has NOT expanded Medicaid!
+        - Below $15,650 = COVERAGE GAP (no insurance help!)
+        - Target: $15,650 - $20,121 for ACA Silver CSR 94%
+        """
         magi_calc = self.calculate_magi(tax_year_id, self.current_year)
-        asset_summary = self.check_asset_eligibility(tax_year_id)
         
         recommendations = []
+        magi = float(magi_calc.magi)
         
-        # Check if over income threshold
-        if not magi_calc.on_track:
+        # CRITICAL: Check for Florida coverage gap (below 100% FPL)
+        min_for_aca = OPTIMAL_MAGI_TARGET["minimum"]  # $15,650
+        optimal_low = OPTIMAL_MAGI_TARGET["optimal_low"]
+        optimal_high = OPTIMAL_MAGI_TARGET["optimal_high"]
+        
+        if magi < min_for_aca:
+            # DANGER: Coverage gap!
+            shortfall = min_for_aca - magi
             recommendations.append({
                 "priority": 1,
-                "action_type": "reduce_income",
-                "description": f"MAGI (${magi_calc.magi:,.2f}) exceeds {magi_calc.target_program} threshold (${magi_calc.threshold:,.2f}) by ${abs(magi_calc.headroom):,.2f}",
-                "potential_savings": float(abs(magi_calc.headroom)),
+                "action_type": "COVERAGE_GAP_WARNING",
+                "description": f"🚨 DANGER: MAGI ${magi:,.2f} is BELOW $15,650 minimum! You're in Florida's COVERAGE GAP - NO subsidies, NO Medicaid!",
+                "potential_savings": shortfall,
+                "impact_on_magi": shortfall,
                 "suggestions": [
-                    "Increase deductible repairs/maintenance",
-                    "Prepay property taxes",
-                    "Review depreciation calculations",
-                    "Consider ACA instead if MAGI > $20,121"
+                    f"INCREASE income by ${shortfall:,.2f} to reach $15,650",
+                    "REDUCE deductible expenses (defer repairs to next year)",
+                    "Don't prepay property taxes for 2026",
+                    "Delay depreciation claims if possible",
+                    "Consider taking less mortgage interest deduction"
                 ]
             })
         
-        # Check asset limits for Medicaid
-        if magi_calc.target_program == "medicaid" and not asset_summary.under_limit:
-            over_by = asset_summary.total_countable - asset_summary.asset_limit
-            recommendations.append({
-                "priority": 2,
-                "action_type": "reduce_assets",
-                "description": f"Countable assets (${asset_summary.total_countable:,.2f}) exceed Medicaid limit (${asset_summary.asset_limit:,.2f}) by ${over_by:,.2f}",
-                "potential_savings": float(over_by),
-                "suggestions": [
-                    "Pay off debts",
-                    "Prepay expenses",
-                    "Purchase exempt assets (funeral, one vehicle)",
-                    "Consider ACA (no asset limit)"
-                ]
-            })
-        
-        # If on track, provide status
-        if magi_calc.on_track:
+        elif magi >= min_for_aca and magi <= optimal_high:
+            # PERFECT: In optimal range for ACA Silver CSR 94%
+            headroom_low = magi - min_for_aca
+            headroom_high = optimal_high - magi
             recommendations.append({
                 "priority": 10,
-                "action_type": "status",
-                "description": f"✅ ON TRACK for {magi_calc.target_program}: MAGI ${magi_calc.magi:,.2f} with ${magi_calc.headroom:,.2f} headroom",
+                "action_type": "OPTIMAL_RANGE",
+                "description": f"✅ PERFECT! MAGI ${magi:,.2f} qualifies for ACA Silver CSR 94% (best coverage!)",
                 "potential_savings": 0,
+                "impact_on_magi": 0,
                 "suggestions": [
-                    "Continue tracking expenses",
-                    "Document all receipts",
-                    "Apply by December 15 deadline"
+                    f"You're ${headroom_low:,.2f} above minimum ($15,650)",
+                    f"You have ${headroom_high:,.2f} headroom before losing CSR 94%",
+                    "Enroll in Florida Blue BlueOptions Silver PPO by Dec 15",
+                    "Mayo Clinic & UF Health are IN-NETWORK",
+                    "Expected premium: $0-50/month, $0 deductible"
                 ]
             })
+        
+        elif magi > optimal_high and magi <= 23475:
+            # GOOD: Still CSR 94% but approaching CSR 87% threshold
+            recommendations.append({
+                "priority": 5,
+                "action_type": "GOOD_BUT_WATCH",
+                "description": f"✅ GOOD: MAGI ${magi:,.2f} still qualifies for CSR 94%, but approaching 150% FPL",
+                "potential_savings": magi - optimal_high,
+                "impact_on_magi": magi - optimal_high,
+                "suggestions": [
+                    "Consider reducing income slightly for safety margin",
+                    f"${23475 - magi:,.2f} headroom before losing CSR 94%",
+                    "Enroll by December 15 for January 1 coverage"
+                ]
+            })
+        
+        elif magi > 23475 and magi <= 31300:
+            # OK: CSR 87% range
+            excess = magi - optimal_high
+            recommendations.append({
+                "priority": 3,
+                "action_type": "CSR_87_RANGE",
+                "description": f"⚠️ MAGI ${magi:,.2f} qualifies for CSR 87% (good, but not best)",
+                "potential_savings": excess,
+                "impact_on_magi": excess,
+                "suggestions": [
+                    f"Reduce MAGI by ${magi - optimal_high:,.2f} for CSR 94%",
+                    "Increase deductible repairs/maintenance",
+                    "Prepay 2026 property taxes in 2025",
+                    "Current benefits: ~$250-500 deductible"
+                ]
+            })
+        
+        elif magi > 31300 and magi <= 62600:
+            # SUBSIDY ONLY: No CSR
+            recommendations.append({
+                "priority": 2,
+                "action_type": "NO_CSR",
+                "description": f"⚠️ MAGI ${magi:,.2f} - subsidy only, NO cost-sharing reductions",
+                "potential_savings": magi - optimal_high,
+                "impact_on_magi": magi - optimal_high,
+                "suggestions": [
+                    f"Reduce MAGI by ${magi - optimal_high:,.2f} for CSR 94%",
+                    "Higher deductibles and copays at this income",
+                    "Consider maximizing all deductions"
+                ]
+            })
+        
+        else:
+            # Above 400% FPL - no subsidies
+            recommendations.append({
+                "priority": 1,
+                "action_type": "NO_SUBSIDIES",
+                "description": f"❌ MAGI ${magi:,.2f} exceeds 400% FPL ($62,600) - NO subsidies available",
+                "potential_savings": magi - optimal_high,
+                "impact_on_magi": magi - optimal_high,
+                "suggestions": [
+                    "Significantly reduce taxable income",
+                    "Maximize all Schedule E deductions",
+                    "Consider retirement contributions"
+                ]
+            })
+        
+        # Add deadline reminder
+        recommendations.append({
+            "priority": 8,
+            "action_type": "DEADLINE_REMINDER",
+            "description": "📅 ACA Open Enrollment: Enroll by December 15 for January 1 coverage",
+            "potential_savings": 0,
+            "impact_on_magi": 0,
+            "suggestions": [
+                "Website: healthcare.gov",
+                "Plan: Florida Blue BlueOptions Silver PPO",
+                "Also enroll in dental (Ameritas or Delta Dental PPO)",
+                "12-month waiting period for dental bridges"
+            ]
+        })
         
         # Store recommendations
         for rec in recommendations:
@@ -429,8 +604,8 @@ class TaxInsuranceOptimizer:
                 "action_type": rec["action_type"],
                 "priority": rec["priority"],
                 "description": rec["description"],
-                "potential_savings": rec["potential_savings"],
-                "impact_on_magi": rec.get("potential_savings", 0)
+                "potential_savings": rec.get("potential_savings", 0),
+                "impact_on_magi": rec.get("impact_on_magi", 0)
             }
             self.supabase.table("tax_optimization_actions").insert(rec_data).execute()
         
