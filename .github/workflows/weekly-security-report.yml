@@ -1,0 +1,73 @@
+name: Weekly Security Report
+
+on:
+  schedule:
+    # Run every Monday at 9:00 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  generate-report:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install --break-system-packages supabase requests
+      
+      - name: Generate Security Report
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ADMIN_KEY: ${{ secrets.SUPABASE_ADMIN_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          echo "🛡️ Generating weekly security report..."
+          
+          if [ -f src/security/weekly_security_report.py ]; then
+            if [ -n "$SLACK_WEBHOOK_URL" ]; then
+              python3 src/security/weekly_security_report.py --slack-webhook "$SLACK_WEBHOOK_URL" --output weekly_report.md
+            else
+              python3 src/security/weekly_security_report.py --output weekly_report.md
+            fi
+          else
+            echo "⚠️ weekly_security_report.py not found"
+          fi
+      
+      - name: Upload Report Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: weekly-security-report
+          path: weekly_report.md
+          retention-days: 30
+      
+      - name: Create Issue with Report (if alerts)
+        if: success()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if report has critical alerts
+          if [ -f weekly_report.md ]; then
+            if grep -q "CRITICAL" weekly_report.md; then
+              # Create GitHub issue
+              gh issue create \
+                --title "🚨 Weekly Security Report - Critical Alerts Detected" \
+                --body-file weekly_report.md \
+                --label "security,alert"
+            fi
+          fi
+      
+      - name: Generate Summary
+        run: |
+          if [ -f weekly_report.md ]; then
+            echo "# Weekly Security Report" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            head -50 weekly_report.md >> $GITHUB_STEP_SUMMARY
+          fi
