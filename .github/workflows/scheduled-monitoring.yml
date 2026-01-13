@@ -1,0 +1,123 @@
+name: Scheduled Security Monitoring
+
+on:
+  schedule:
+    # Hourly anomaly check
+    - cron: '0 * * * *'  # Every hour
+    # Daily security dashboard
+    - cron: '0 0 * * *'  # Midnight UTC
+    # Weekly security report
+    - cron: '0 0 * * 1'  # Monday midnight UTC
+  
+  workflow_dispatch:
+    inputs:
+      frequency:
+        description: 'Monitoring frequency'
+        required: true
+        default: 'daily'
+        type: choice
+        options:
+          - hourly
+          - daily
+          - weekly
+
+jobs:
+  hourly-anomaly-check:
+    if: github.event.schedule == '0 * * * *' || github.event.inputs.frequency == 'hourly'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install --break-system-packages supabase python-dotenv
+      
+      - name: Run hourly anomaly check
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python src/security/scheduled_monitoring.py hourly
+  
+  daily-security-dashboard:
+    if: github.event.schedule == '0 0 * * *' || github.event.inputs.frequency == 'daily'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install --break-system-packages supabase python-dotenv
+      
+      - name: Run daily security check
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python src/security/scheduled_monitoring.py daily
+      
+      - name: Upload security dashboard
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-dashboard
+          path: reports/security_dashboard_*.html
+          retention-days: 30
+      
+      - name: Add dashboard to summary
+        run: |
+          echo "## Daily Security Dashboard" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Dashboard generated at $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download from artifacts above ⬆️" >> $GITHUB_STEP_SUMMARY
+  
+  weekly-security-report:
+    if: github.event.schedule == '0 0 * * 1' || github.event.inputs.frequency == 'weekly'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install --break-system-packages supabase python-dotenv
+      
+      - name: Generate weekly report
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python src/security/scheduled_monitoring.py weekly
+      
+      - name: Upload weekly report
+        uses: actions/upload-artifact@v3
+        with:
+          name: weekly-security-report
+          path: reports/weekly_security_report_*.md
+          retention-days: 90
+      
+      - name: Add report to summary
+        run: |
+          echo "## Weekly Security Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat reports/weekly_security_report_*.md >> $GITHUB_STEP_SUMMARY
