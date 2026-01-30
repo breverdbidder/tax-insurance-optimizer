@@ -1,0 +1,294 @@
+name: Tax Projection Dashboard
+
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: 'Tax year to analyze'
+        required: true
+        default: '2025'
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - calculate_magi
+          - generate_projections
+          - check_thresholds
+          - full_report
+  schedule:
+    # Run monthly on the 1st at 9 AM EST
+    - cron: '0 14 1 * *'
+
+jobs:
+  tax_projection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: pip install supabase httpx
+      
+      - name: Run Tax Projection Dashboard
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python3 << 'PYTHON'
+          import os
+          import json
+          from datetime import datetime, date
+          from decimal import Decimal
+          from supabase import create_client
+
+          # Configuration
+          SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mocerqjnksmhcjzxrewo.supabase.co")
+          SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+          YEAR = int("${{ github.event.inputs.year }}" or datetime.now().year)
+          ACTION = "${{ github.event.inputs.action }}" or "full_report"
+
+          # Florida 2025/2026 Thresholds (NON-EXPANSION STATE!)
+          THRESHOLDS = {
+              "coverage_gap": {"max": 15649, "description": "NO COVERAGE - Florida coverage gap!"},
+              "aca_csr_94": {"min": 15650, "max": 23475, "fpl": "100-150%", "description": "BEST: Silver CSR 94% ($0 deductible)"},
+              "aca_csr_87": {"min": 23476, "max": 31300, "fpl": "150-200%", "description": "GOOD: Silver CSR 87%"},
+              "aca_csr_73": {"min": 31301, "max": 39125, "fpl": "200-250%", "description": "OK: Silver CSR 73%"},
+              "aca_subsidy": {"min": 39126, "max": 62600, "fpl": "250-400%", "description": "Subsidy only, no CSR"},
+              "no_subsidy": {"min": 62601, "description": "NO SUBSIDIES"}
+          }
+
+          supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+          def get_tax_year_data(year):
+              """Get tax year configuration"""
+              result = supabase.table("tax_years").select("*").eq("year", year).execute()
+              return result.data[0] if result.data else None
+
+          def calculate_ytd_income(tax_year_id, year):
+              """Calculate year-to-date income and expenses"""
+              # Get all properties
+              props = supabase.table("rental_properties").select("id, annual_depreciation").eq("tax_year_id", tax_year_id).execute()
+              property_ids = [p["id"] for p in props.data]
+              
+              if not property_ids:
+                  return {"gross": 0, "expenses": 0, "depreciation": 0, "net": 0}
+              
+              # Get income
+              income = supabase.table("rental_income").select("gross_rent, vacancy_loss, other_income").in_("property_id", property_ids).eq("year", year).execute()
+              
+              gross = sum(float(r.get("gross_rent", 0) or 0) for r in income.data)
+              vacancy = sum(float(r.get("vacancy_loss", 0) or 0) for r in income.data)
+              other = sum(float(r.get("other_income", 0) or 0) for r in income.data)
+              
+              # Get expenses
+              expenses = supabase.table("rental_expenses").select("amount").in_("property_id", property_ids).eq("year", year).execute()
+              total_expenses = sum(float(e.get("amount", 0) or 0) for e in expenses.data)
+              
+              # Depreciation
+              depreciation = sum(float(p.get("annual_depreciation", 0) or 0) for p in props.data)
+              
+              net = gross - vacancy + other - total_expenses - depreciation
+              
+              return {
+                  "gross": gross,
+                  "vacancy_loss": vacancy,
+                  "other_income": other,
+                  "expenses": total_expenses,
+                  "depreciation": depreciation,
+                  "net": net
+              }
+
+          def project_full_year(ytd_data, current_month):
+              """Project full year based on YTD"""
+              if current_month == 0:
+                  return ytd_data
+              
+              multiplier = 12 / current_month
+              return {
+                  "gross": ytd_data["gross"] * multiplier,
+                  "expenses": ytd_data["expenses"] * multiplier,
+                  "depreciation": ytd_data["depreciation"],  # Annual, not multiplied
+                  "net": (ytd_data["gross"] - ytd_data["expenses"]) * multiplier - ytd_data["depreciation"]
+              }
+
+          def determine_insurance_tier(magi):
+              """Determine which insurance tier based on MAGI"""
+              for tier, thresholds in THRESHOLDS.items():
+                  min_val = thresholds.get("min", 0)
+                  max_val = thresholds.get("max", float("inf"))
+                  if min_val <= magi <= max_val:
+                      return tier, thresholds
+              return "unknown", {}
+
+          def generate_recommendations(magi, tier, thresholds):
+              """Generate actionable recommendations"""
+              recs = []
+              
+              if tier == "coverage_gap":
+                  shortfall = 15650 - magi
+                  recs.append({
+                      "priority": 1,
+                      "type": "CRITICAL",
+                      "message": f"🚨 COVERAGE GAP! Increase income by ${shortfall:,.2f} to reach $15,650 minimum",
+                      "actions": [
+                          "Reduce deductible expenses",
+                          "Delay repairs to next year",
+                          "Don't prepay property taxes",
+                          "Report all other income"
+                      ]
+                  })
+              elif tier == "aca_csr_94":
+                  headroom = thresholds["max"] - magi
+                  recs.append({
+                      "priority": 10,
+                      "type": "OPTIMAL",
+                      "message": f"✅ PERFECT! ${headroom:,.2f} headroom before losing CSR 94%",
+                      "actions": [
+                          "Enroll by December 15 for January coverage",
+                          "Choose Florida Blue BlueOptions Silver PPO",
+                          "Mayo Clinic & UF Health are in-network"
+                      ]
+                  })
+              elif tier in ["aca_csr_87", "aca_csr_73"]:
+                  target = 20121
+                  excess = magi - target
+                  recs.append({
+                      "priority": 5,
+                      "type": "OPTIMIZE",
+                      "message": f"⚠️ Could save by reducing MAGI by ${excess:,.2f}",
+                      "actions": [
+                          "Increase repairs/maintenance expenses",
+                          "Prepay next year's property taxes",
+                          "Document all home office expenses"
+                      ]
+                  })
+              elif tier == "no_subsidy":
+                  recs.append({
+                      "priority": 2,
+                      "type": "WARNING",
+                      "message": "❌ No ACA subsidies at this income level",
+                      "actions": [
+                          "Maximize all Schedule E deductions",
+                          "Consider retirement contributions",
+                          "Review all expense categories"
+                      ]
+                  })
+              
+              return recs
+
+          def full_report():
+              """Generate full tax projection report"""
+              print("=" * 60)
+              print(f"📊 TAX PROJECTION DASHBOARD - {YEAR}")
+              print(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+              print("=" * 60)
+              
+              tax_year = get_tax_year_data(YEAR)
+              if not tax_year:
+                  print(f"❌ No tax year configured for {YEAR}")
+                  return
+              
+              print(f"\n📋 Tax Year Configuration:")
+              print(f"   Filer: {tax_year.get('filer_name', 'Unknown')}")
+              print(f"   Filing Status: {tax_year.get('filing_status', 'single')}")
+              print(f"   Target Program: {tax_year.get('target_program', 'aca_silver_csr')}")
+              print(f"   Income Goal: ${float(tax_year.get('income_goal', 0)):,.2f}")
+              
+              # Calculate YTD
+              current_month = datetime.now().month
+              ytd = calculate_ytd_income(tax_year["id"], YEAR)
+              
+              print(f"\n💰 Year-to-Date ({current_month} months):")
+              print(f"   Gross Rental Income: ${ytd['gross']:,.2f}")
+              print(f"   Vacancy Loss: ${ytd.get('vacancy_loss', 0):,.2f}")
+              print(f"   Other Income: ${ytd.get('other_income', 0):,.2f}")
+              print(f"   Total Expenses: ${ytd['expenses']:,.2f}")
+              print(f"   Depreciation: ${ytd['depreciation']:,.2f}")
+              print(f"   Net Income (MAGI): ${ytd['net']:,.2f}")
+              
+              # Project full year
+              projected = project_full_year(ytd, current_month)
+              
+              print(f"\n📈 Full Year Projection:")
+              print(f"   Projected Gross: ${projected['gross']:,.2f}")
+              print(f"   Projected Expenses: ${projected['expenses']:,.2f}")
+              print(f"   Projected Net (MAGI): ${projected['net']:,.2f}")
+              
+              # Determine tier
+              tier, thresholds = determine_insurance_tier(projected["net"])
+              
+              print(f"\n🏥 Insurance Eligibility:")
+              print(f"   Tier: {tier.upper()}")
+              print(f"   Description: {thresholds.get('description', 'Unknown')}")
+              if "fpl" in thresholds:
+                  print(f"   FPL Range: {thresholds['fpl']}")
+              
+              # Recommendations
+              recs = generate_recommendations(projected["net"], tier, thresholds)
+              
+              print(f"\n💡 Recommendations:")
+              for rec in sorted(recs, key=lambda x: x["priority"], reverse=True):
+                  print(f"   [{rec['type']}] {rec['message']}")
+                  for action in rec["actions"]:
+                      print(f"      • {action}")
+              
+              # Store calculation
+              calc_data = {
+                  "tax_year_id": tax_year["id"],
+                  "calculation_date": date.today().isoformat(),
+                  "month": current_month,
+                  "rental_gross_income": ytd["gross"],
+                  "rental_expenses_total": ytd["expenses"],
+                  "rental_net_income": ytd["net"],
+                  "other_income": ytd.get("other_income", 0),
+                  "agi": projected["net"],
+                  "magi": projected["net"],
+                  "target_program": tax_year.get("target_program"),
+                  "program_threshold": thresholds.get("max", 0),
+                  "on_track": tier in ["aca_csr_94", "aca_csr_87"],
+                  "headroom": (thresholds.get("max", 0) - projected["net"]) if "max" in thresholds else 0
+              }
+              
+              supabase.table("magi_calculations").insert(calc_data).execute()
+              
+              # Store recommendations
+              for rec in recs:
+                  action_data = {
+                      "tax_year_id": tax_year["id"],
+                      "action_type": rec["type"],
+                      "priority": rec["priority"],
+                      "description": rec["message"],
+                      "potential_savings": 0,
+                      "impact_on_magi": 0
+                  }
+                  supabase.table("tax_optimization_actions").insert(action_data).execute()
+              
+              print("\n" + "=" * 60)
+              print("✅ Report saved to database")
+              print("=" * 60)
+
+          # Main execution
+          if ACTION == "full_report":
+              full_report()
+          elif ACTION == "calculate_magi":
+              tax_year = get_tax_year_data(YEAR)
+              if tax_year:
+                  ytd = calculate_ytd_income(tax_year["id"], YEAR)
+                  print(f"MAGI (YTD): ${ytd['net']:,.2f}")
+          elif ACTION == "check_thresholds":
+              print("Florida ACA Thresholds (2025/2026):")
+              for tier, t in THRESHOLDS.items():
+                  print(f"  {tier}: {t.get('min', 0)}-{t.get('max', 'unlimited')} ({t.get('description')})")
+          elif ACTION == "generate_projections":
+              tax_year = get_tax_year_data(YEAR)
+              if tax_year:
+                  ytd = calculate_ytd_income(tax_year["id"], YEAR)
+                  projected = project_full_year(ytd, datetime.now().month)
+                  print(f"Projected Full Year MAGI: ${projected['net']:,.2f}")
+          
+          PYTHON
