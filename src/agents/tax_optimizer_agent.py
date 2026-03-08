@@ -24,7 +24,9 @@ from dataclasses import dataclass, asdict
 from supabase import create_client, Client
 
 # Configuration
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mocerqjnksmhcjzxrewo.supabase.co")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+if not SUPABASE_URL:
+    raise ValueError("SUPABASE_URL environment variable required")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 # 2026 Federal Poverty Level (for 2026 coverage)
